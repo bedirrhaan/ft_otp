@@ -16,8 +16,12 @@ def totp(key):
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "key.hex"
-    with open(path, "r") as f:
-        hexkey = "".join(f.read().split())
+    try:
+        with open(path, "r") as f:
+            hexkey = "".join(f.read().split())
+    except FileNotFoundError:
+        print("Error: File not found")
+        return
 
     key = bytes.fromhex(hexkey)
     b32 = base64.b32encode(key).decode()
