@@ -6,7 +6,6 @@ import hmac
 import hashlib
 import struct
 import base64
-import secrets
 
 PASS = b"ft_otp_secret_key"
 MAGIC = b"FTOTP\x01"
@@ -21,11 +20,7 @@ def error(msg):
 
 
 def usage():
-    print("Usage: ./ft_otp [-g keyfile | -k keyfile | -s | -i keyfile]", file=sys.stderr)
-    print("  -g  store encrypted key + make QR", file=sys.stderr)
-    print("  -k  print current TOTP", file=sys.stderr)
-    print("  -s  generate seed, store key + make QR", file=sys.stderr)
-    print("  -i  open GUI", file=sys.stderr)
+    print("Usage: ./ft_otp [-g keyfile | -k keyfile]", file=sys.stderr)
     sys.exit(1)
 
 
@@ -89,21 +84,21 @@ def otpauth_uri(key_bytes):
     )
 
 
+# bonus: QR code with seed (base32) for authenticator apps
 def make_qr(key_bytes):
     uri = otpauth_uri(key_bytes)
     try:
         import qrcode
     except ImportError:
-        print("QR skipped: install with  pip install qrcode pillow")
+        print("QR skipped: pip install qrcode pillow")
+        print("seed (base32):", to_base32(key_bytes))
         print("URI:", uri)
-        print("base32:", to_base32(key_bytes))
         return
 
     qr = qrcode.QRCode(border=2)
     qr.add_data(uri)
     qr.make(fit=True)
 
-    # terminal preview
     print("QR (scan with authenticator):")
     qr.print_ascii(invert=True)
 
@@ -112,9 +107,44 @@ def make_qr(key_bytes):
         img.save(QR_FILE)
         print(f"QR saved in {QR_FILE}")
     except Exception:
-        print("PNG not saved (pillow missing?), URI printed above")
+        print("PNG not saved (need pillow)")
 
-    print("base32:", to_base32(key_bytes))
+    print("seed (base32):", to_base32(key_bytes))
+
+
+# bonus: graphic interface
+def run_gui(key):
+    try:
+        import tkinter as tk
+    except ImportError:
+        print("GUI skipped: tkinter not available")
+        return
+
+    root = tk.Tk()
+    root.title("ft_otp")
+    root.geometry("320x220")
+    root.resizable(False, False)
+
+    tk.Label(root, text="ft_otp", font=("Courier", 16, "bold")).pack(pady=(16, 4))
+    code_lbl = tk.Label(root, text="000000", font=("Courier", 36, "bold"))
+    code_lbl.pack(pady=8)
+    time_lbl = tk.Label(root, text="", font=("Courier", 12))
+    time_lbl.pack()
+
+    bar = tk.Canvas(root, width=260, height=12, highlightthickness=0)
+    bar.pack(pady=12)
+    bar_rect = bar.create_rectangle(0, 0, 260, 12, fill="#333333", width=0)
+
+    def tick():
+        code_lbl.config(text=f"{totp(key):06d}")
+        left = seconds_left()
+        time_lbl.config(text=f"{left}s left")
+        bar.coords(bar_rect, 0, 0, int(260 * (left / PERIOD)), 12)
+        bar.itemconfig(bar_rect, fill="#2a9d8f" if left > 5 else "#e76f51")
+        root.after(200, tick)
+
+    tick()
+    root.mainloop()
 
 
 def write_key(key_bytes):
@@ -146,21 +176,10 @@ def save_key(path):
     key_bytes = bytes.fromhex(raw)
     write_key(key_bytes)
     print("Key was successfully saved in ft_otp.key.")
+
+    # bonus
     make_qr(key_bytes)
-
-
-def gen_seed():
-    # 32 bytes -> 64 hex chars
-    key_bytes = secrets.token_bytes(32)
-    hexkey = key_bytes.hex()
-
-    with open("key.hex", "w") as f:
-        f.write(hexkey)
-
-    write_key(key_bytes)
-    print("Seed generated and saved in key.hex")
-    print("Key was successfully saved in ft_otp.key.")
-    make_qr(key_bytes)
+    run_gui(key_bytes)
 
 
 def gen_otp(path):
@@ -168,72 +187,15 @@ def gen_otp(path):
     print(f"{totp(key):06d}")
 
 
-def run_gui(path):
-    try:
-        import tkinter as tk
-    except ImportError:
-        error("tkinter not available on this system")
-
-    key = read_key_file(path)
-
-    root = tk.Tk()
-    root.title("ft_otp")
-    root.geometry("320x220")
-    root.resizable(False, False)
-
-    title = tk.Label(root, text="ft_otp", font=("Courier", 16, "bold"))
-    title.pack(pady=(16, 4))
-
-    code_lbl = tk.Label(root, text="000000", font=("Courier", 36, "bold"))
-    code_lbl.pack(pady=8)
-
-    time_lbl = tk.Label(root, text="", font=("Courier", 12))
-    time_lbl.pack()
-
-    bar = tk.Canvas(root, width=260, height=12, highlightthickness=0)
-    bar.pack(pady=12)
-    bar_rect = bar.create_rectangle(0, 0, 260, 12, fill="#333333", width=0)
-
-    info = tk.Label(root, text="updates every second", font=("Courier", 9), fg="#666666")
-    info.pack(pady=(4, 0))
-
-    def tick():
-        code = f"{totp(key):06d}"
-        left = seconds_left()
-        code_lbl.config(text=code)
-        time_lbl.config(text=f"{left}s left")
-        width = int(260 * (left / PERIOD))
-        bar.coords(bar_rect, 0, 0, width, 12)
-        color = "#2a9d8f" if left > 5 else "#e76f51"
-        bar.itemconfig(bar_rect, fill=color)
-        root.after(200, tick)
-
-    tick()
-    root.mainloop()
-
-
 def main():
-    if len(sys.argv) < 2:
+    if len(sys.argv) != 3:
         usage()
 
-    flag = sys.argv[1]
-
-    if flag == "-s":
-        if len(sys.argv) != 2:
-            usage()
-        gen_seed()
-    elif flag == "-g":
-        if len(sys.argv) != 3:
-            usage()
-        save_key(sys.argv[2])
+    flag, arg = sys.argv[1], sys.argv[2]
+    if flag == "-g":
+        save_key(arg)
     elif flag == "-k":
-        if len(sys.argv) != 3:
-            usage()
-        gen_otp(sys.argv[2])
-    elif flag == "-i":
-        if len(sys.argv) != 3:
-            usage()
-        run_gui(sys.argv[2])
+        gen_otp(arg)
     else:
         usage()
 
